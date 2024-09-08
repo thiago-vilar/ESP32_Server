@@ -3,7 +3,7 @@
 
 const char* ssid = "DTEL-SIBILA2.4";
 const char* password = "06021982";
-const char* host = "192.168.1.13";
+const char* host = "192.168.1.13";  
 const int httpPort = 80;
 
 WiFiClient client;
@@ -26,13 +26,14 @@ Servo servo;
 #define NOTE_HIGH 1460
 
 enum Estado {
-  INICIAL,
-  ATIVACAO,
-  ATIVADO,
-  CHECK,
-  AUTENTICACAO,
-  PEGA_LADRAO
+  INICIAL, ATIVACAO, ATIVADO, CHECK, AUTENTICACAO, PEGA_LADRAO
 };
+
+Estado estado = INICIAL;  // Variável de estado
+unsigned long contadorTempo = 0;  // Contador de tempo
+int tentativas = 0;  // Contador de tentativas
+const int maxTentativas = 2;  // Máximo de tentativas
+const unsigned long tempoSenha = 10000;  // Tempo máximo para entrada de senha
 
 void setupPins() {
   pinMode(PIN_A, OUTPUT);
@@ -43,24 +44,19 @@ void setupPins() {
   pinMode(PIN_F, OUTPUT);
   pinMode(PIN_G, OUTPUT);
   pinMode(PIN_BUZZER, OUTPUT);
-  pinMode(PIN_BOTAO, INPUT_PULLUP);
   pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_BOTAO, INPUT_PULLUP);
+  pinMode(PIN_SERVO, OUTPUT);
   pinMode(PIN_LDR, INPUT);
   servo.attach(PIN_SERVO);
   servo.write(0);
 }
 
 const bool sete_segmentos[10][7] = {
-  {1,1,1,1,1,1,0},
-  {0,1,1,0,0,0,0},
-  {1,1,0,1,1,0,1},
-  {1,1,1,1,0,0,1},
-  {0,1,1,0,0,1,1},
-  {1,0,1,1,0,1,1},
-  {1,0,1,1,1,1,1},
-  {1,1,1,0,0,0,0},
-  {1,1,1,1,1,1,1},
-  {1,1,1,1,0,1,1}
+  {1, 1, 1, 1, 1, 1, 0}, {0, 1, 1, 0, 0, 0, 0}, {1, 1, 0, 1, 1, 0, 1},
+  {1, 1, 1, 1, 0, 0, 1}, {0, 1, 1, 0, 0, 1, 1}, {1, 0, 1, 1, 0, 1, 1},
+  {1, 0, 1, 1, 1, 1, 1}, {1, 1, 1, 0, 0, 0, 0}, {1, 1, 1, 1, 1, 1, 1},
+  {1, 1, 1, 1, 0, 1, 1}
 };
 
 void escreverNumero(int numero) {
@@ -74,17 +70,9 @@ void escreverNumero(int numero) {
   digitalWrite(PIN_G, display[6]);
 }
 
-Estado estado = INICIAL;
-unsigned long tempoAtivacao = 10000;
-unsigned long tempoSenha = 10000;
-unsigned long contadorTempo = 0;
-int tentativas = 0;
-int maxTentativas = 2;
-
 void setup() {
   Serial.begin(115200);
   setupPins();
-  Serial.println("Sistema de alarme inicializado.");
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -93,10 +81,52 @@ void setup() {
   Serial.println("WiFi connected");
 }
 
+void sendToServer(String path, String data) {
+  if (client.connect(host, httpPort)) {
+    client.println("POST " + path + " HTTP/1.1");
+    client.println("Host: " + String(host));
+    client.println("Content-Type: application/x-www-form-urlencoded");
+    client.println("Content-Length: " + data.length());
+    client.println();
+    client.println(data);
+    Serial.println("Data sent to server");
+  } else {
+    Serial.println("Connection failed");
+  }
+}
+
+String receiveFromServer() {
+  String line;
+  long startTime = millis();
+  while (client.available() == 0) {
+    if (millis() - startTime > 5000) {
+      Serial.println("Server response timeout");
+      return "";
+    }
+  }
+  line = client.readStringUntil('\n');
+  return line;
+}
+
+void handleServerResponse(String response) {
+  if (response.startsWith("OK")) {
+    Serial.println("Access granted by server.");
+    digitalWrite(PIN_LED, LOW);
+    noTone(PIN_BUZZER);
+    servo.write(0);
+    estado = INICIAL;
+  } else {
+    Serial.println("Access denied by server.");
+    digitalWrite(PIN_LED, HIGH);
+    tone(PIN_BUZZER, NOTE_HIGH);
+  }
+}
+
 void loop() {
   int reading = touchRead(PIN_BOTAO);
   int displayNumber = 0;
   int seconds = 0;
+  String senhaVigilancia, response;
 
   switch (estado) {
     case INICIAL:
@@ -106,7 +136,6 @@ void loop() {
         Serial.println("Alarme sendo ativado. Feche a porta.");
       }
       break;
-
     case ATIVACAO:
       digitalWrite(PIN_LED, (millis() - contadorTempo) % 1000 < 500);
       seconds = (millis() - contadorTempo) / 1000;
@@ -119,7 +148,6 @@ void loop() {
         Serial.println("Alarme ativado e porta trancada.");
       }
       break;
-
     case ATIVADO:
       if ((analogRead(PIN_LDR) > 512) || (reading <= 10)) {
         tone(PIN_BUZZER, NOTE_HIGH, 300);
@@ -132,88 +160,78 @@ void loop() {
         Serial.println("Intrusão detectada! Digite a senha:");
       }
       break;
-
     case CHECK:
-      if (millis() - contadorTempo < tempoSenha) {
-        if (Serial.available()) {
-          String senha = Serial.readStringUntil('\n');
-          senha.trim();
-          if (client.connect(host, httpPort)) {
-            client.println("POST /authenticate HTTP/1.1");
-            client.println("Host: " + String(host));
-            client.println("Content-Type: application/x-www-form-urlencoded");
-            client.print("Content-Length: ");
-            client.println(senha.length());
-            client.println();
-            client.println(senha);
-            estado = AUTENTICACAO;
+      seconds = 9 - ((millis() - contadorTempo) / 1000);
+      escreverNumero(max(0, seconds));  
+      if (Serial.available() > 0) {
+        String senha = Serial.readStringUntil('\n');
+        if (senha == "1234") {
+          estado = INICIAL;
+          Serial.println("Senha correta. Alarme desativado.");
+        } else {
+          tentativas++;
+          if (tentativas >= maxTentativas) {
+            estado = PEGA_LADRAO;
           } else {
-            Serial.println("Falha na conexão com o servidor.");
+            Serial.println("Senha incorreta, tente novamente!");
+            contadorTempo = millis(); 
           }
         }
-        seconds = (tempoSenha - (millis() - contadorTempo)) / 1000;
-        escreverNumero(max(0, seconds));
-      } else {
+      }
+      if (millis() - contadorTempo > tempoSenha) {
         tentativas++;
         if (tentativas >= maxTentativas) {
           estado = PEGA_LADRAO;
         } else {
           Serial.println("Tempo esgotado, tente novamente!");
-          contadorTempo = millis();
+          contadorTempo = millis(); 
         }
       }
       break;
-
-    case AUTENTICACAO:
-      if (client.connected() && client.available()) {
-        String response = client.readStringUntil('\n');
-        if (response.indexOf("OK") != -1) {
-          Serial.println("Acesso autorizado.");
-          servo.write(0);
-          digitalWrite(PIN_LED, LOW);
-          noTone(PIN_BUZZER);
-          estado = INICIAL;
-        } else {
-          Serial.println("Acesso negado.");
-          tentativas++;
-          if (tentativas >= maxTentativas) {
-            estado = PEGA_LADRAO;
-          } else {
-            estado = CHECK;
-            contadorTempo = millis();
-          }
-        }
-      }
-      break;
-
     case PEGA_LADRAO:
       digitalWrite(PIN_LED, HIGH);
       tone(PIN_BUZZER, NOTE_HIGH, 1000);
       delay(1000);
       noTone(PIN_BUZZER);
       Serial.println("Sistema de segurança ativado. Entre com a senha de vigilância:");
+
       while (!Serial.available()) {
-        delay(100);
+        delay(1000);
       }
-      String senhaVigilancia = Serial.readStringUntil('\n');
+
+      senhaVigilancia = Serial.readStringUntil('\n');
       senhaVigilancia.trim();
+      String postData = "password=" + senhaVigilancia;
+
+      Serial.println("Senha digitada: " + senhaVigilancia);  
+      Serial.println("Dados formatados para envio: " + postData); 
+
       if (client.connect(host, httpPort)) {
+        Serial.println("Conexão ao servidor estabelecida.");
+
+      
         client.println("POST /authenticate HTTP/1.1");
         client.println("Host: " + String(host));
         client.println("Content-Type: application/x-www-form-urlencoded");
         client.print("Content-Length: ");
-        client.println(senhaVigilancia.length());
-        client.println();
-        client.println(senhaVigilancia);
+        client.println(postData.length());
+        client.println();  
+        client.println(postData);  
+
+        Serial.println("Dados enviados ao servidor.");
+
         unsigned long startTime = millis();
         while (client.available() == 0) {
           if (millis() - startTime > 5000) {
-            Serial.println("Tempo de resposta excedido.");
+            Serial.println("Tempo de resposta do servidor excedido.");
             break;
           }
         }
+
         if (client.available()) {
           String response = client.readStringUntil('\n');
+          Serial.println("Resposta do servidor: " + response);  
+
           if (response.indexOf("OK") != -1) {
             Serial.println("Acesso autorizado.");
             digitalWrite(PIN_LED, LOW);
@@ -225,6 +243,8 @@ void loop() {
             digitalWrite(PIN_LED, HIGH);
             tone(PIN_BUZZER, NOTE_HIGH);
           }
+        } else {
+          Serial.println("Nenhuma resposta disponível do servidor.");
         }
       } else {
         Serial.println("Falha na conexão com o servidor.");
@@ -232,5 +252,5 @@ void loop() {
         tone(PIN_BUZZER, NOTE_HIGH);
       }
       break;
-  }
+    }
 }
