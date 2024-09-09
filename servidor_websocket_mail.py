@@ -22,7 +22,7 @@ def send_email():
     print("Security alert email sent.")
 
 def main():
-    correct_password = "12345678"
+    correct_password =str("password=12345678")
     failed_attempts = 0
     max_attempts = 2
 
@@ -30,6 +30,10 @@ def main():
     sock.bind(('', 80))
     sock.listen(5)
     print("Server listening on port 80")
+    mysock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    hostname = socket.gethostname()
+    local_ip = socket.gethostbyname(hostname)
+    print(local_ip)
 
     while True:
         conn, addr = sock.accept()
