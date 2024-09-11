@@ -22,7 +22,7 @@ def send_email():
     horario_bruto = time.time()
     horario_tupla = time.localtime(horario_bruto)
     horario = time.strftime("%H:%M:%S do dia %d/%m/%Y", horario_tupla)
-    body = f""" Intrusão detectada às {horario}.\n"""
+    body = f""" Intrusão detectada às {horario}.\n Teste OK!!!!!!!!!!!!!"""
     msg = MIMEText(body, "plain")
     msg["Subject"] = "Intrusão"
     msg["From"] = recipient
